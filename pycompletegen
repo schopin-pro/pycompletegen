@@ -1,0 +1,91 @@
+#!/usr/bin/env python3
+import argparse
+import optparse
+import io
+import shlex
+import sys
+import os
+
+try:
+    import click
+    CLICK=True
+except ImportError:
+    CLICK=False
+
+completions = []
+
+stdout = sys.stdout
+
+def _inject_argparse(method, cmd):
+    def wrapper(*args, **kwargs):
+        parser: argparse.ArgumentParser = args[0]
+        for action in parser._actions:
+            complete = ['complete', '-c', cmd] 
+            if action.option_strings:
+                if action.help and action.help != argparse.SUPPRESS:
+                    complete.append(f"--description={shlex.quote(action.help)}")
+                for o in action.option_strings:
+                    assert o.startswith('-')
+                    if o.startswith('--'):
+                        complete.extend(('-l', o[2:]))
+                        continue
+                    if len(o) == 2:
+                        complete.extend(('-s', o[1]))
+                    else:
+                        complete.extend(('-o', o[1:]))
+                if action.nargs != 0:
+                    if action.nargs != '?':
+                        complete.append('--require-parameter')
+                    if action.choices:
+                        complete.append(f"\"{' '.join(action.choices)}\"")
+            else:
+                continue
+            stdout.write(" ".join(complete) + "\n")
+        return method(*args, **kwargs)
+    return wrapper
+
+def _inject_optparse(method, cmd):
+    def wrapper(*args, **kwargs):
+        parser: optparse.OptionParser = args[0]
+        for option in parser.option_list:
+            complete = ['complete', '-c', cmd] 
+            for short in option._short_opts:
+                complete.extend(('-s', short[1]))
+            for long in option._long_opts:
+                complete.extend(('-l', long[2:]))
+            if option.nargs is not None and option.nargs >= 1:
+                complete.append('--require-parameter')
+            if option.help and option.help != optparse.SUPPRESS_HELP:
+                complete.append(f"--description={shlex.quote(option.help)}")
+            if option.choices:
+                complete.append(f"\"{' '.join(option.choices)}\"")
+            stdout.write(" ".join(complete) + "\n")
+        return method(*args, **kwargs)
+    return wrapper
+
+if __name__ == '__main__':
+    sys.argv = sys.argv[1:]
+    script = sys.argv[0]
+    argparse.ArgumentParser.parse_known_args = _inject_argparse(argparse.ArgumentParser.parse_known_args, script)
+    optparse.OptionParser.parse_args = _inject_optparse(optparse.OptionParser.parse_args, script)
+    if len(sys.argv) == 1:
+        sys.argv.append('--help')
+    path = None
+    if os.path.exists(script):
+        path = script
+    else:
+        search_paths = [''] + os.environ.get('PATH', '').split(':')
+        for p in search_paths:
+            candidate = p + os.path.sep + script
+            if os.path.exists(candidate):
+                path = candidate
+                break
+    if path is None:
+        print("not found")
+        sys.exit(1)
+    path = os.path.realpath(path)
+    sys.path.insert(0, os.path.dirname(path))
+
+    sys.stdout = io.StringIO()
+    code = compile(open(path).read(), path, 'exec')
+    exec(code)
